@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,47 +16,64 @@ type flags struct {
 	n, c int
 }
 
-// parseFunc is a command-line flag parser function
-type parseFunc func(string) error
+// number is a natural number
+type number int
 
-func (f *flags) parse() (err error) {
-	// a map of flag names and parsers
-	parsers := map[string]parseFunc{
-		"url": f.urlVar(&f.url), // parses a url flag and updates f.url
-		"n":   f.intVar(&f.n),   // parses an int flag and updates f.n
-		"c":   f.intVar(&f.c),   // parses an int flag and updates f.c
+// toNumber is a convenience function for converting p to *number
+func toNumber(p *int) *number {
+	return (*number)(p)
+}
+
+func (n *number) Set(s string) error {
+	v, err := strconv.ParseInt(s, 0, strconv.IntSize)
+	switch {
+	case err != nil:
+		err = errors.New("parse error")
+	case v <= 0:
+		err = errors.New("should be positive")
 	}
-
-	for _, arg := range os.Args[1:] {
-		n, v, ok := strings.Cut(arg, "=")
-		if !ok {
-			continue // can't parse the flag
-		}
-
-		parse, ok := parsers[strings.TrimPrefix(n, "-")]
-		if !ok {
-			continue // can't find a matching parser
-		}
-
-		if err = parse(v); err != nil {
-			err = fmt.Errorf("invalid value %q for flag %s: %w", v, n, err)
-			break // parsing error
-		}
-	}
+	*n = number(v)
 	return err
 }
 
-func (f *flags) urlVar(p *string) parseFunc {
-	return func(s string) error {
-		_, err := url.Parse(s)
-		*p = s
-		return err
-	}
+func (n *number) String() string {
+	return strconv.Itoa(int(*n))
 }
 
-func (f *flags) intVar(p *int) parseFunc {
-	return func(s string) (err error) {
-		*p, err = strconv.Atoi(s)
+func (f *flags) parse() (err error) {
+	flag.StringVar(&f.url, "url", "", "HTTP Server `URL` to hit (Required)")
+	flag.Var(toNumber(&f.n), "n", "Number of requests to make")
+	flag.Var(toNumber(&f.c), "c", "Concurrency level")
+	flag.Parse()
+	if err := f.validate(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		flag.Usage()
 		return err
 	}
+	return nil
+}
+
+func (f *flags) validate() error {
+	if f.c > f.n {
+		return fmt.Errorf("-c=%d: should be less than or equal to -n=%d", f.c, f.n)
+	}
+	if err := validateURL(f.url); err != nil {
+		return fmt.Errorf("invalid value %q for flag -url: %w", f.url, err)
+	}
+	return nil
+}
+
+func validateURL(s string) error {
+	u, err := url.Parse(s)
+	switch {
+	case strings.TrimSpace(s) == "":
+		err = errors.New("required")
+	case err != nil:
+		err = errors.New("parse error")
+	case u.Scheme != "http":
+		err = errors.New("only supported scheme is http")
+	case u.Host == "":
+		err = errors.New("missing host")
+	}
+	return err
 }
